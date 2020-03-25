@@ -47,3 +47,4 @@ think everybody has a local nexus, every one want's to
 2. setup4nexus did not tested on a real MAC or linux, so I don't think it will work well, because it will open a terminal(only tested cmd on WIN) with subprocess to work.
 3. maven4nexus, just like the same....
 4. maven4nexus, may be writed as a maven plugin.
+5. no "CLI help info",because i'm a lazy boy
