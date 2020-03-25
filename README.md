@@ -21,6 +21,7 @@ think everybody has a local nexus, every one want's to
 1. must use maven
 2. copy `maven4nexus.py` to your target maven module's root  
 3. run with `python maven4nexus.py -t [nexus repo path] -u [nexus username] -p [nexus password]`
+4. use "-m [Maven Home]" to detect your maven home
 
 # How
 1. For python
