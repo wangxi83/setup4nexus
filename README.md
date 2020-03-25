@@ -14,14 +14,15 @@ think everybody has a local nexus, every one want's to
 ## for python
 1. must include a setup.py
 2. copy `setup4nexus.py` to your project's root
-3. run with `python setup4nexus.py -t [nexus repo path] -u [nexus username] -p [nexus password]`
-4. use "-k True(default value)|Fasle" to keep wheels after package and upload
+3. run with `python setup4nexus.py -t [nexus repo path](must) -u [nexus username] -p [nexus password]`
+4. use "-k True(default value)|Fasle" to keep wheels after package and upload (opt)
 
 ## for java
 1. must use maven
 2. copy `maven4nexus.py` to your target maven module's root  
-3. run with `python maven4nexus.py -t [nexus repo path] -u [nexus username] -p [nexus password]`
-4. use "-m [Maven Home]" to detect your maven home
+3. run with `python maven4nexus.py -p [maven module path](must) -t [nexus repo path](must) -u [nexus username](opt) -p [nexus password](opt)`
+4. use "-m [Maven Home]" to detect your maven home (opt)
+5. use "-j [JAVA Home]" to detect your java home (opt)
 
 # How
 1. For python
