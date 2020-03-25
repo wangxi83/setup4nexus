@@ -25,6 +25,7 @@ think everybody has a local nexus, every one want's to
 5. use "-j [JAVA Home]" to detect your java home (opt)
 6. use "-i [maven repo url]" to set a custom mave repo source (opt)
 7. if you want to clean up , switch to the [maven module's path] use "mvn clean"
+***note that: only support <packaging>jar</packaging> or <packaging>pom</packaging>--and all sub-final-module is <packaging>jar</packaging> ***
 
 # How
 1. For python
