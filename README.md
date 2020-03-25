@@ -20,11 +20,11 @@ think everybody has a local nexus, every one want's to
 
 ## for java
 1. must use maven
-3. run with `python maven4nexus.py -s [maven module path](must) -t [nexus repo path](must) -u [nexus username](opt) -p [nexus password](opt)`
+3. run with `python maven4nexus.py -s [maven module's pom path](must) -t [nexus repo path](must) -u [nexus username](opt) -p [nexus password](opt)`
 4. use "-m [Maven Home]" to detect your maven home (opt)
 5. use "-j [JAVA Home]" to detect your java home (opt)
 6. use "-i [maven repo url]" to set a custom mave repo source (opt)
-7. if you want to clean up , switch to the [maven module path] use "mvn clean"
+7. if you want to clean up , switch to the [maven module's path] use "mvn clean"
 
 # How
 1. For python
