@@ -22,11 +22,12 @@ think everybody has a local nexus, every one want's to
 ## for java
 1. must use maven
 3. run with `python maven4nexus.py -s [maven module's pom path](must) -t [nexus repo path](must) -u [nexus username](opt) -p [nexus password](opt)`
-4. use "-m [Maven Home]" to detect your maven home (opt)
-5. use "-j [JAVA Home]" to detect your java home (opt)
-6. use "-i [maven repo url]" to set a custom mave repo source (opt)
-7. use "--mvn-settings=[maven setting.xml]", "--mvn-local-repository=[your local maven repository]" (both opt)
-8. if you want to clean up , switch to the [maven module's path] use "mvn clean"
+4. use "-k True(default value)|Fasle" to keep nexux_pom.xmls and jars and dependency jars after package and upload (opt)
+5. use "-m [Maven Home]" to detect your maven home (opt)
+6. use "-j [JAVA Home]" to detect your java home (opt)
+7. use "-i [maven repo url]" to set a custom mave repo source (opt)
+8. use "--mvn-settings=[maven setting.xml]", "--mvn-local-repository=[your local maven repository]" (both opt)
+9. if you want to clean up , switch to the [maven module's path] use "mvn clean"
 
 ***note that: only support &lt;packaging&gt;jar&lt;/packaging&gt; or &lt;packaging&gt;pom&lt;/packaging&gt;--and all sub-final-module is &lt;packaging&gt;jar&lt;/packaging&gt;***
 
