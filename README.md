@@ -3,7 +3,7 @@ simply upload your Python(Pypi) or JAVA(Maven)  packaged artifact like wheel or 
 
 **YES!I don't and I never want to BUILD AND PUBLISH this repo to PUBLIC Pypi.**
 
-** ALL you need is download this code and try it yourself whatelse**
+**ALL you need is download this code and try it yourself whatelse**
 
 # Why
 think everybody has a local nexus, every one want's to 
@@ -25,7 +25,8 @@ think everybody has a local nexus, every one want's to
 4. use "-m [Maven Home]" to detect your maven home (opt)
 5. use "-j [JAVA Home]" to detect your java home (opt)
 6. use "-i [maven repo url]" to set a custom mave repo source (opt)
-7. if you want to clean up , switch to the [maven module's path] use "mvn clean"
+7. use "--mvn-settings=[maven setting.xml]", "--mvn-local-repository=[your local maven repository]" (both opt)
+8. if you want to clean up , switch to the [maven module's path] use "mvn clean"
 
 ***note that: only support &lt;packaging&gt;jar&lt;/packaging&gt; or &lt;packaging&gt;pom&lt;/packaging&gt;--and all sub-final-module is &lt;packaging&gt;jar&lt;/packaging&gt; ***
 
