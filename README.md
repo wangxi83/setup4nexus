@@ -41,9 +41,9 @@ think everybody has a local nexus, every one want's to
 
 2. For java
    - build with maven
-   - copy pom.xml to the target dir
+   - copy and backup the poms
    - modify pom.xml add plugin "maven-dependency-plugin"
-   - execute maven goal "dependecy:list" and "dependency:copy-dependencies"
+   - execute maven goal "package" , "dependecy:list" and "dependency:copy-dependencies"
    - gather "dependecy:list" items and find the copied dependencies jars, resovle them to "mvn deploy:deploy-file" goal
    - tather builded result and resolve to "mvn deploy:deploy-file" goal
    - execute these goals
