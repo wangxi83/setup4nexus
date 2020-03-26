@@ -28,7 +28,7 @@ think everybody has a local nexus, every one want's to
 7. use "--mvn-settings=[maven setting.xml]", "--mvn-local-repository=[your local maven repository]" (both opt)
 8. if you want to clean up , switch to the [maven module's path] use "mvn clean"
 
-***note that: only support &lt;packaging&gt;jar&lt;/packaging&gt; or &lt;packaging&gt;pom&lt;/packaging&gt;--and all sub-final-module is &lt;packaging&gt;jar&lt;/packaging&gt; ***
+***note that: only support &lt;packaging&gt;jar&lt;/packaging&gt; or &lt;packaging&gt;pom&lt;/packaging&gt;--and all sub-final-module is &lt;packaging&gt;jar&lt;/packaging&gt;***
 
 # How
 1. For python
