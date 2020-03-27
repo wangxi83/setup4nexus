@@ -56,3 +56,4 @@ think everybody has a local nexus, every one want's to
 3. maven4nexus, just like the same....
 4. maven4nexus, may be writed as a maven plugin.
 5. no "CLI help info",because i'm a lazy boy
+6. when meet some err(like network err), you will run it again, but now, every stage will work again, it don't check its result--build or mavn package will re-run, it need to be improved and every stages should be more robustness.
