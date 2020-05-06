@@ -16,7 +16,7 @@
 
 import xml.etree.ElementTree as ET
 from pathlib import Path as pathlib
-import os, asyncio, sys, getopt, requests, subprocess, re
+import os, asyncio, sys, getopt, subprocess, re
 
 
 def is_win():
@@ -58,18 +58,18 @@ async def del_file(path):
             os.remove(c_path)
 
 
-async def simple_download(url):
-    err = None
-    for i in range(3):
-        try:
-            r = requests.get(url)
-            with open(str(pathlib("./dist", "libs", pathlib(url).name)), "wb") as code:
-                code.write(r.content)
-                return
-        except Exception as e:
-            print("重试下载："+url)
-            err = e
-    raise Exception(f"重试3次，无法下载{url}, 最后一次失败原因：{err}")
+# async def simple_download(url):
+#     err = None
+#     for i in range(3):
+#         try:
+#             r = requests.get(url)
+#             with open(str(pathlib("./dist", "libs", pathlib(url).name)), "wb") as code:
+#                 code.write(r.content)
+#                 return
+#         except Exception as e:
+#             print("重试下载："+url)
+#             err = e
+#     raise Exception(f"重试3次，无法下载{url}, 最后一次失败原因：{err}")
 
 async def simple_twine2nexus(nexus_repo, whl, username=None, password=None):
     access = ""
@@ -88,6 +88,13 @@ async def simple_twine2nexus(nexus_repo, whl, username=None, password=None):
             err = e
     raise Exception(f"重试3次，无法上传{whl}到{nexus_repo}, 最后一次失败原因：{err}")
 
+def find_el(el, path, nskey, namespaces):
+    temp = None
+    if namespaces and len(namespaces)>0:
+        temp = el.find(path, namespaces=namespaces)
+    if temp is None and nskey:
+        temp = el.find(path.replace(f"{nskey}:", ""))
+    return temp
 
 # 复制和处理原始pom
 def process_source_pom(source_pom, repo, work_dir):
@@ -98,25 +105,27 @@ def process_source_pom(source_pom, repo, work_dir):
     :param work_dir:
     :return:
     """
-    # 首先解析pom
-    namespaces = dict([node for _, node in ET.iterparse(source_pom, events=['start-ns'])])
-    namespaces = dict([(key if key else "default", namespaces.get(key)) for key in namespaces])  # 把默认命名空间命个名
 
     nexus_poms = {}
     # region:一个递归处理module的方法。主要是要修改父module的路径（因为，需要复制一个子pom出来，修改其parent，这样，才能让子pom继承nexus_pom的插件信息）
     def process_module(pom, parent_pom=None):
+        print("processing "+pom)
+        # 首先解析pom
+        namespaces = dict([node for _, node in ET.iterparse(pom, events=['start-ns'])])
+        namespaces = dict([(nskey if nskey else "default", namespaces.get(nskey)) for nskey in namespaces])  # 把默认命名空间命个名
+
         tree = ET.parse(pom)
         root = tree.getroot()
         # 针对传入的pom处理几个东西：
         # 1、判断package类型，如果是jar，则直接处理。如果是pom，则处理其module
-        pkg_el = root.find(".//default:packaging", namespaces=namespaces)
+        pkg_el = find_el(root, ".//default:packaging", "default", namespaces)
         if not pkg_el or pkg_el.text=="pom" or pkg_el.text=="jar":
-            cur_pom_modules = root.find(".//default:modules", namespaces=namespaces)
-            if cur_pom_modules:
+            cur_pom_modules = find_el(root, ".//default:modules", "default", namespaces)
+            if cur_pom_modules is not None:
                 for module_el in cur_pom_modules:
                     # 这里的意思是——如果module写的是pom的路径，则直接使用。如果写的是模块名（目录），则加上pom.xml。
                     # 由于maven pom重module一般都是相对路径，因此这里通过pathlib可以很方便的就得到了全路径
-                    module_pom = str(pathlib(module_el.text, "" if module_el.text.find(".xml")>0 else "pom.xml").resolve())
+                    module_pom = os.path.join(module_el.text,"" if module_el.text.find(".xml")>0 else "pom.xml")
                     # 从当前pom所在的路径（pom/../）作为基准，找到module_pom的真实路径，处理module_pom
                     process_module(str(pathlib(pom, "../", module_pom).resolve()), parent_pom=pom)
                     # 将当前pom的module，修改为后面拷贝出来的nexus_pom的相对路径
@@ -124,65 +133,99 @@ def process_source_pom(source_pom, repo, work_dir):
 
             if parent_pom:
                 # 设置每一个module_pom的parent到当前pom（最原始的除外）
-                parent_el = root.find("./default:parent", namespaces=namespaces)
+                parent_el = find_el(root, "./default:parent", "default", namespaces)
                 if parent_el is not None:
-                    relativePath_el = parent_el.find("./default:relativePath", namespaces=namespaces)
+                    relativePath_el = find_el(parent_el, "./default:relativePath", "default", namespaces)
                     if relativePath_el is None:
                         relativePath_el = ET.SubElement(parent_el, "relativePath")
                     # 获取父pom.xml相对于当前pom所在目录的相对目录（在mvn的pom中，realativePath是相对于pom所在的目录，而不是pom.xml本身的）
+                    parent_pom = parent_pom.replace("pom.xml", "nexus_pom.xml")
                     relativePath_el.text = os.path.relpath(parent_pom, str(pathlib(pom).parent.resolve()))
+            else:
+                # 修改最外层pom的plugin、repositories，因为可以继承
+                build_el = find_el(root, "./default:build", "default", namespaces)
+                if build_el is None: build_el=ET.SubElement(root, "build")
+                plugins_el = find_el(build_el, "./default:plugins", "default", namespaces)
+                if plugins_el is None: plugins_el=ET.SubElement(build_el, "plugins")
 
+                # 2.1.构建maven-jar-plugin
+                # plugin_el = find_el(plugins_el, "./default:plugin/[default:artifactId='maven-jar-plugin']", "default", namespaces)
+                # if plugin_el is None:
+                #     plugin_el = ET.SubElement(plugins_el, "plugin")
+                #     ET.SubElement(plugin_el, "artifactId").text = "maven-jar-plugin"
+                # configuration_el = find_el(plugin_el, "./default:configuration", "default", namespaces)
+                # if configuration_el is None: configuration_el = ET.SubElement(plugin_el, "configuration")
+                # outputDirectory_el = find_el(configuration_el, "./default:outputDirectory", "default", namespaces)
+                # if outputDirectory_el is None: outputDirectory_el = ET.SubElement(configuration_el, "outputDirectory")
+                # # 设置jar的output目录为work_dir
+                # outputDirectory_el.text = str(pathlib(work_dir, "builds").resolve())
+                # archive_el = find_el(configuration_el, "./default:archive", "default", namespaces)
+                # # 设置pom.properties的输出位置，便于后面使用
+                # if archive_el is None: archive_el = ET.SubElement(configuration_el, "archive")
+                # pomPropertiesFile_el = find_el(archive_el, "./default:pomPropertiesFile", "default", namespaces)
+                # if pomPropertiesFile_el is None: pomPropertiesFile_el = ET.SubElement(archive_el, "pomPropertiesFile")
+                # addMavenDescriptor_el = find_el(archive_el, "./default:addMavenDescriptor", "default", namespaces)
+                # if addMavenDescriptor_el is None: addMavenDescriptor_el = ET.SubElement(archive_el, "addMavenDescriptor")
+                # addMavenDescriptor_el.text = 'true'
+                # artifactid_el = find_el(root, "./default:artifactId", "default", namespaces)
+                # if artifactid_el is None:
+                #     raise Exception(f"无法处理{pom}，没有artifactId")
+                # artifactId = artifactid_el.text
+                # pomPropertiesFile_el.text = str(pathlib(work_dir, "builds", artifactId+".pom.properties").resolve())
+                # # 在mac上回出现maven-jar-plugin无法读取这个properties文件的异常，很奇怪，明明是创建，为什么会先读取？？这里尝试主动先写一个
+                # os.makedirs(str(pathlib(work_dir, "builds").resolve()), exist_ok=True)
+                # with open(pomPropertiesFile_el.text, "w"):
+                #     pass
+
+                # 2.1.构建maven-resource-plugin用于拷贝pom
+                plugin_el = find_el(plugins_el, "./default:plugin/[default:artifactId='maven-resources-plugin']", "default", namespaces)
+                if plugin_el is None:
+                    plugin_el = ET.SubElement(plugins_el, "plugin")
+                    ET.SubElement(plugin_el, "artifactId").text = "maven-resources-plugin"
+                configuration_el = find_el(plugin_el, "./default:configuration", "default", namespaces)
+                if configuration_el is None: configuration_el = ET.SubElement(plugin_el, "configuration")
+                outputDirectory_el = find_el(configuration_el, "./default:outputDirectory", "default", namespaces)
+                if outputDirectory_el is None: outputDirectory_el = ET.SubElement(configuration_el, "outputDirectory")
+                outputDirectory_el.text = "${project.build.directory}"
+                resources_el = find_el(configuration_el, "./default:resources", "default", namespaces)
+                if resources_el is None: resources_el = ET.SubElement(configuration_el, "resources")
+                resource_el = find_el(resources_el, "./default:resource", "default", namespaces)
+                if resource_el is None: resource_el = ET.SubElement(resources_el, "resource")
+                directory_el = find_el(resource_el, "./default:directory", "default", namespaces)
+                if directory_el is None: directory_el = ET.SubElement(resource_el, "directory")
+                directory_el.text = "${project.basedir}"
+                includes_el = find_el(resource_el, "./default:includes", "default", namespaces)
+                if includes_el is None: includes_el = ET.SubElement(resource_el, "includes")
+                include_el = ET.SubElement(includes_el, "include")
+                include_el.text = "pom.xml"
+
+                # 2.2.构建maven-dependency-plugin
+                plugin_el = find_el(plugins_el, "./default:plugin/[default:artifactId='maven-dependency-plugin']", "default", namespaces)
+                if plugin_el is None:
+                    plugin_el = ET.SubElement(plugins_el, "plugin")
+                    ET.SubElement(plugin_el, "artifactId").text = "maven-dependency-plugin"
+                version_el = find_el(plugin_el, "./default:version", "default", namespaces)
+                if version_el is None: version_el = ET.SubElement(plugin_el, "version")
+                version_el.text = "2.9"
+                configuration_el = find_el(plugin_el, "./default:configuration", "default", namespaces)
+                if configuration_el is None: configuration_el = ET.SubElement(plugin_el, "configuration")
+                outputDirectory_el = find_el(configuration_el, "./default:outputDirectory", "default", namespaces)
+                if outputDirectory_el is None: outputDirectory_el = ET.SubElement(configuration_el, "outputDirectory")
+                # 设置jar的output目录为work_dir
+                outputDirectory_el.text = str(pathlib(work_dir, "dependencies").resolve())
+                # 2.3.构建repositories
+                if repo:
+                    repositories_el = find_el(root, "./default:repositories", "default", namespaces)
+                    if repositories_el is None: repositories_el=ET.SubElement(root, "repositories")
+                    repository_el = find_el(repositories_el, f"./default:repository/[default:url='{repo}']", "default", namespaces)
+                    if repository_el is None:
+                        repository_el = ET.SubElement(repositories_el, "repository")
+                        ET.SubElement(repository_el, "id").text = "repo"
+                        ET.SubElement(repository_el, "name").text = "repo"
+                        ET.SubElement(repository_el, "layout").text = "default"
+                        ET.SubElement(repository_el, "url").text = repo
         else:
             raise Exception(f"无法处理{pom}的packaging类型：{pkg_el.text}")
-
-        # 修改每一个pom的plugin、repositories
-        build_el = root.find("./default:build", namespaces=namespaces)
-        if build_el is None: build_el=ET.SubElement(root, "build")
-        plugins_el = build_el.find("./default:plugins", namespaces=namespaces)
-        if plugins_el is None: plugins_el=ET.SubElement(build_el, "plugins")
-        # 2.1.构建maven-jar-plugin
-        plugin_el = plugins_el.find("./default:plugin/[default:artifactId='maven-jar-plugin']", namespaces=namespaces)
-        if plugin_el is None:
-            plugin_el = ET.SubElement(plugins_el, "plugin")
-            ET.SubElement(plugin_el, "artifactId").text = "maven-jar-plugin"
-        configuration_el = plugin_el.find("./default:configuration", namespaces=namespaces)
-        if configuration_el is None: configuration_el = ET.SubElement(plugin_el, "configuration")
-        outputDirectory_el = configuration_el.find("./default:outputDirectory", namespaces=namespaces)
-        if outputDirectory_el is None: outputDirectory_el = ET.SubElement(configuration_el, "outputDirectory")
-        # 设置jar的output目录为work_dir
-        outputDirectory_el.text = str(pathlib(work_dir, "builds").resolve())
-        archive_el = configuration_el.find("./default:archive", namespaces=namespaces)
-        # 设置pom.properties的输出位置，便于后面使用
-        if archive_el is None: archive_el = ET.SubElement(configuration_el, "archive")
-        pomPropertiesFile_el = archive_el.find("./default:pomPropertiesFile", namespaces=namespaces)
-        if pomPropertiesFile_el is None: pomPropertiesFile_el = ET.SubElement(archive_el, "pomPropertiesFile")
-        artifactId = root.find("./default:artifactId", namespaces=namespaces).text
-        pomPropertiesFile_el.text = str(pathlib(work_dir, "builds", artifactId+".pom.properties").resolve())
-        # 2.2.构建maven-dependency-plugin
-        plugin_el = plugins_el.find("./default:plugin/[default:artifactId='maven-dependency-plugin']", namespaces=namespaces)
-        if plugin_el is None:
-            plugin_el = ET.SubElement(plugins_el, "plugin")
-            ET.SubElement(plugin_el, "artifactId").text = "maven-dependency-plugin"
-        version_el = plugin_el.find("./default:version", namespaces=namespaces)
-        if version_el is None: version_el = ET.SubElement(plugin_el, "version")
-        version_el.text = "2.9"
-        configuration_el = plugin_el.find("./default:configuration", namespaces=namespaces)
-        if configuration_el is None: configuration_el = ET.SubElement(plugin_el, "configuration")
-        outputDirectory_el = configuration_el.find("./default:outputDirectory", namespaces=namespaces)
-        if outputDirectory_el is None: outputDirectory_el = ET.SubElement(configuration_el, "outputDirectory")
-        # 设置jar的output目录为work_dir
-        outputDirectory_el.text = str(pathlib(work_dir, "dependencies").resolve())
-        # 2.3.构建repositories
-        if repo:
-            repositories_el = root.find("./default:repositories", namespaces=namespaces)
-            if repositories_el is None: repositories_el=ET.SubElement(root, "repositories")
-            repository_el = repositories_el.find(f"./default:repository/[default:url='{repo}']", namespaces=namespaces)
-            if repository_el is None:
-                repository_el = ET.SubElement(repositories_el, "repository")
-                ET.SubElement(repository_el, "id").text = "repo"
-                ET.SubElement(repository_el, "name").text = "repo"
-                ET.SubElement(repository_el, "layout").text = "default"
-                ET.SubElement(repository_el, "url").text = repo
 
         # 3、将修改后的新pom输出到当前pom同级目录
         [ET.register_namespace("" if key=="default" else key, namespaces.get(key)) for key in namespaces]
@@ -223,7 +266,8 @@ async def run():
     mvn_setting = None
     mvn_local_repository = None
     keep_result = True
-    opts, args = getopt.getopt(sys.argv[1:], "i:t:m:j:u:p:s:k:",
+    gen_file = False
+    opts, args = getopt.getopt(sys.argv[1:], "i:t:m:j:u:p:s:k:f",
                                ["source=", "nexus=","maven-home=","java-home=", "pom-path=", "username=", "password=", "mvn-settings=", "mvn-local-repository=", "keep="])
     for arg, val in opts:
         if arg in ("-i","--source"):
@@ -246,6 +290,8 @@ async def run():
             mvn_local_repository = val
         if arg in ("-k","--keep"):
             keep_result = val=="True"
+        if arg == "-f":
+            gen_file = True
     if pom_path is None or nexus is None:
         raise Exception("-s [maven module's pom path], -t [nexus url] must specify")
     if pathlib(pom_path).name.find(".xml")<0:
@@ -253,17 +299,15 @@ async def run():
 
     if not os.path.exists(pom_path): raise Exception(f"{pom_path} not exist")
 
-    if nexus_user and nexus_pwd:
-        username = "admin"
-        password = "admin123"
+    if nexus_user and nexus_pwd and nexus:
         from urllib import parse
         result = parse.urlparse(nexus)
-        nexus = f"{result.scheme}://{username}:{password}@{result.netloc}{result.path}"
+        nexus = f"{result.scheme}://{nexus_user}:{nexus_pwd}@{result.netloc}{result.path}"
 
     nexus_poms = {}
+    # 创建工作目录
+    work_dir = str(pathlib(pom_path, "../nexus_out", "target").resolve())
     try:
-        # 创建工作目录
-        work_dir = str(pathlib(pom_path, "../nexus_out", "target").resolve())
         if os.path.exists(work_dir): await del_file(work_dir)
         else: os.makedirs(work_dir, exist_ok=True)
 
@@ -291,19 +335,26 @@ async def run():
         print(nexus_poms)
 
         # 开始执行maven的动作
-        mvn = f"{java} -Dmaven.multiModuleProjectDirectory={str(pathlib(pom_path, '../').resolve())} " \
-                "-DarchetypeCatalog=internal -Dmaven.multiModuleProjectDirectory=$M2_HOME " \
-                f"-Dmaven.home={maven_home} -Dclassworlds.conf={str(pathlib(maven_home, 'bin', 'm2.conf').resolve())} " \
-                f"-Dfile.encoding=UTF-8 -classpath {str(pathlib(maven_home, 'boot', 'plexus-classworlds-2.5.2.jar').resolve())} " \
-                f"org.codehaus.classworlds.Launcher --errors -s {mvn_setting} " \
-                f"{mvn_local_repository} -DskipTests=true -f {nexus_poms.get(pom_path)} "
+        files = os.listdir(str(pathlib(maven_home, 'boot').resolve()))
+        exe_jar = str(pathlib(maven_home, 'boot', 'plexus-classworlds-2.6.0.jar').resolve())
+        for file in files:
+            if file.startswith("plexus-classworlds"):
+                exe_jar = str(pathlib(maven_home, 'boot', file).resolve())
 
-        mvn_package = f"{mvn} package dependency:copy-dependencies"
-        mvn_clean = f"{mvn} clean dependency:list" # clean的时候，顺便搜集依赖jar的信息
+        mvn = f"{java} -Dmaven.multiModuleProjectDirectory={str(pathlib(pom_path, '../').resolve())} " \
+              "-DarchetypeCatalog=internal -Dmaven.multiModuleProjectDirectory=$M2_HOME " \
+              f"-Dmaven.home={maven_home} -Dclassworlds.conf={str(pathlib(maven_home, 'bin', 'm2.conf').resolve())} " \
+              f"-Dfile.encoding=UTF-8 -classpath {exe_jar} " \
+              f"org.codehaus.classworlds.Launcher --errors -s {mvn_setting} " \
+              f"{mvn_local_repository if mvn_local_repository is not None else ''} -DskipTests=true -f {nexus_poms.get(pom_path)} "
+
+        mvn_package = f"{mvn} package -Dmdep.copyPom=true dependency:copy-dependencies"
+        mvn_dependency_list = f"{mvn} dependency:list" # 搜集依赖jar的信息
+        mvn_clean = f"{mvn} clean"
 
         # region: 执行maven
         print("开打虚拟控制台....")
-        xwin = "cmd" if is_win() else "gnome-terminal -e '/bin/bash'"
+        xwin = "cmd" if is_win() else "/bin/bash"
         console = subprocess.Popen(xwin, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         print("开打虚拟控制台完成.")
         # endregion
@@ -313,6 +364,8 @@ async def run():
         """
         # 定义搜集器
         __default_collector = lambda res: print(f"get resp: {res}")
+        errors = []
+        __err_collector = lambda res: errors.append(res) if res.strip().startswith("[ERROR]") else None
         # 定义处理方法
         async def process_command(cmd_list):
             for i in range(len(cmd_list)):
@@ -326,6 +379,8 @@ async def run():
                 while True:
                     resp = console.stdout.readline()
                     resp = resp.decode("GBK")
+                    if resp.strip().startswith("[ERROR]"):
+                        raise Exception("执行命令出现异常")
                     [collect(resp) for collect in info_collecotr]
                     if resp.strip() == command_over_signal:
                         # 说明上一个命令已经发送，并且执行成功
@@ -341,62 +396,107 @@ async def run():
             if m.match(res) and res not in dependencies:
                 dependencies.append(res)
 
+        build_targets = []
+        def __build_targets_collector__(res):
+            res = res.replace("[INFO]", "").strip()
+            if res.startswith("Building jar:"):
+                res = res.replace("Building jar:", "").strip()
+                if not res.endswith("-sources.jar"):
+                    # \programing\WorkSpace\FoundationPlatform\SobeyHive-Flow\IMPL\target\sobeyhive-flow-impl-1.0.jar
+                    build_targets.append(res)
+
         commands = [
-            {"cmd": mvn_package, "confirm": "___mvn_package_over", "info_collectors":  [__default_collector]},
-            {"cmd": mvn_clean, "confirm": "___mvn_clean_over", "info_collectors":  [__default_collector, __artifactlist_collector__]}
+            {"cmd": mvn_clean, "confirm": "___mvn_clean_over", "info_collectors":  [__default_collector]},
+            {"cmd": mvn_package, "confirm": "___mvn_package_over", "info_collectors":  [__default_collector, __err_collector, __build_targets_collector__]},
+            {"cmd": mvn_dependency_list, "confirm": "___mvn_dependencylist_over", "info_collectors":  [__default_collector, __artifactlist_collector__]}
         ]
         # 把任务启动起来
         tasks = [asyncio.ensure_future(process_command(commands))]
-        fetures, pendings = await asyncio.wait(tasks)
+        fetures, pendings = await asyncio.wait(tasks, return_when=asyncio.tasks.FIRST_EXCEPTION)
         for task in fetures:
             #  执行迭代，让任务在主事件循环中处理完
             pass
         print("执行mvn命令打包完成.")
+        if len(errors)>0:
+            raise Exception("执行mvn打包出现错误，请检查控制台[ERROR]信息")
         # endregion
 
         #  region: 为dependencies构造mvn deploy命令，同时，把target也包含进来
         #  由于前面采用maven-jar-plugin输出了pom.properties到builds目录，因此这里就可以使用
+        #    —— 这句话作废。因为新版本的jar-plugin在mac上没测试通过，其逻辑和官网描述完全不一致。pomPropertiesFile的设置完全变了逻辑
+        #       并且，在mac上测试的时候，只要自定义了jar-plugin，就会编译不通过。
+        #       因此构造nexux_pom的时候，不再构造jar-plugin，从package的信息中获取原始的target位置
         mvn_deploys = []
-        pl = pathlib(work_dir)
-        files = os.listdir(str(pl.joinpath("builds").resolve()))
-        for file in files:
-            if file.find(".properties")>0:
-                version, groupId, artifactId = None, None, None
-                with open(str(pl.joinpath("builds", file).resolve()), "r") as prop:
+        # pl = pathlib(work_dir)
+        # files = os.listdir(str(pl.joinpath("builds").resolve()))
+        # for file in files:
+        #     if file.find(".properties")>0:
+        #         version, groupId, artifactId = None, None, None
+        #         with open(str(pl.joinpath("builds", file).resolve()), "r") as prop:
+        #             line = prop.readline()
+        #             while line:
+        #                 if line.find("version=")>0: version = line.replace("version=","")
+        #                 if line.find("groupId=")>0: groupId = line.replace("groupId=","")
+        #                 if line.find("artifactId=")>0: artifactId = line.replace("artifactId=","")
+        #                 line = prop.readline()
+        #         if version and groupId and artifactId:
+        #             mvn_deploys.append(f"mvn deploy:deploy-file -DgroupId={groupId} "
+        #                                f"-DartifactId={artifactId} -Dversion={version} "
+        #                                f"-DgeneratePom=true -Dpackaging=jar "
+        #                                f"-Durl={nexus} "
+        #                                f"-Dfile={str(pl.joinpath(artifactId+'-'+version+'.jar'))}")
+        for item in build_targets:
+            target_dir = str(pathlib(item, "../").resolve())
+            propertyfile = str(pathlib(target_dir, "maven-archiver", "pom.properties").resolve())
+            if not os.path.exists(propertyfile):
+                raise Exception(f"错误，{target_dir}没有生成pom.properties")
+            version, groupId, artifactId = None, None, None
+            with open(propertyfile, "r") as prop:
+                line = prop.readline()
+                while line:
+                    if line.find("version=")>0: version = line.replace("version=","")
+                    if line.find("groupId=")>0: groupId = line.replace("groupId=","")
+                    if line.find("artifactId=")>0: artifactId = line.replace("artifactId=","")
                     line = prop.readline()
-                    while line:
-                        if line.find("version=")>0: version = line.replace("version=","")
-                        if line.find("groupId=")>0: groupId = line.replace("groupId=","")
-                        if line.find("artifactId=")>0: artifactId = line.replace("artifactId=","")
-                        line = prop.readline()
                 if version and groupId and artifactId:
                     mvn_deploys.append(f"mvn deploy:deploy-file -DgroupId={groupId} "
                                        f"-DartifactId={artifactId} -Dversion={version} "
-                                       f"-DgeneratePom=true -Dpackaging=jar "
+                                       f"-DgeneratePom=false -Dpackaging=jar "
                                        f"-Durl={nexus} "
-                                       f"-Dfile={str(pl.joinpath(artifactId+'-'+version+'.jar'))}")
+                                       f"-Dfile={item} "
+                                       f"-DpomFile={str(pathlib(item, '../', 'pom.xml'))}")
 
+        pl = pathlib(work_dir)
         for item in dependencies:
             item = item.split(":")
             # org.springframework:spring-aop:jar:4.2.0.RELEASE:compile
             version, groupId, artifactId = item[3],item[0],item[1]
             command = (f"mvn deploy:deploy-file -DgroupId={groupId} "
-                        f"-DartifactId={artifactId} -Dversion={version} "
-                        f"-DgeneratePom=true -Dpackaging=jar "
-                        f"-Durl={nexus} "
-                        f"-Dfile={str(pl.joinpath('dependencies', artifactId+'-'+version+'.jar'))}")
+                       f"-DartifactId={artifactId} -Dversion={version} "
+                       f"-DgeneratePom=false -Dpackaging=jar "
+                       f"-Durl={nexus} "
+                       f"-Dfile={str(pl.joinpath('dependencies', artifactId+'-'+version+'.jar'))} "
+                       f"-DpomFile={str(pl.joinpath('dependencies', artifactId+'-'+version+'.pom'))}")
             if command not in mvn_deploys:
                 mvn_deploys.append(command)
         # endregion
 
         # region 重新进入虚拟环境，在虚拟环境中执行mvn deploy
         #  目前直接覆盖上传，按道理，应该查询一下，然后再上传
-        print("上传到nexus....")
-        for mvn_deploy in mvn_deploys:
-            out, err = await exec_shell(mvn_deploy)
-            if err:
-                raise Exception(err)
-        print("上传到nexus完成.")
+        if gen_file:
+            with open(str(pathlib(work_dir, "upload.sh").resolve()), "a+") as code:
+                # code.write(f'for pom in {str(pathlib(work_dir, "*.pom"))};'+
+                #            f' do mvn deploy:deploy-file -Durl={nexus}' +
+                #            ' -Dfile="${pom%%.pom}.jar" -DgeneratePom=false -DpomFile="$pom"')
+                for mvn in mvn_deploys:
+                    code.write(mvn+"\n")
+        else:
+            print("上传到nexus....")
+            for mvn_deploy in mvn_deploys:
+                out, err = await exec_shell(mvn_deploy)
+                if err:
+                    raise Exception(err)
+            print("上传到nexus完成.")
         # endregion
     except Exception as e:
         import traceback
