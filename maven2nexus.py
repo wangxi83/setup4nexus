@@ -16,7 +16,7 @@
 
 import xml.etree.ElementTree as ET
 from pathlib import Path as pathlib
-import os, asyncio, sys, getopt, subprocess, re
+import os, asyncio, sys, getopt, subprocess, re, shutil
 
 
 def is_win():
@@ -34,7 +34,10 @@ async def exec_shell(command: []):
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=not isinstance(command, list)) as process:
         try:
             out, err = await loop.run_in_executor(None, process.communicate)
-            return out.decode("GBK"), err.decode("GBK")
+            try:
+                return out.decode("UTF-8"), err.decode("UTF-8")
+            except UnicodeDecodeError :
+                return out.decode("GBK"), err.decode("GBK")
         except Exception:  # muh pycodestyle
             def kill():
                 process.kill()
@@ -141,13 +144,12 @@ def process_source_pom(source_pom, repo, work_dir):
                     # 获取父pom.xml相对于当前pom所在目录的相对目录（在mvn的pom中，realativePath是相对于pom所在的目录，而不是pom.xml本身的）
                     parent_pom = parent_pom.replace("pom.xml", "nexus_pom.xml")
                     relativePath_el.text = os.path.relpath(parent_pom, str(pathlib(pom).parent.resolve()))
-
-                # 为每一个nexus_pom构建插件。不写到最外层的原因是：copy-dependency会把外层依赖的内容——也就是打包的内容，复制到target，这不是我们希望的
+            else:
+                # 在最外层构建插件。其他的都可以继承
                 build_el = find_el(root, "./default:build", "default", namespaces)
                 if build_el is None: build_el=ET.SubElement(root, "build")
                 plugins_el = find_el(build_el, "./default:plugins", "default", namespaces)
                 if plugins_el is None: plugins_el=ET.SubElement(build_el, "plugins")
-
                 # 2.1.构建maven-jar-plugin
                 # plugin_el = find_el(plugins_el, "./default:plugin/[default:artifactId='maven-jar-plugin']", "default", namespaces)
                 # if plugin_el is None:
@@ -212,7 +214,7 @@ def process_source_pom(source_pom, repo, work_dir):
                 outputDirectory_el = find_el(configuration_el, "./default:outputDirectory", "default", namespaces)
                 if outputDirectory_el is None: outputDirectory_el = ET.SubElement(configuration_el, "outputDirectory")
                 # 设置jar的output目录为work_dir
-                outputDirectory_el.text = str(pathlib(work_dir, "dependencies").resolve())
+                outputDirectory_el.text = work_dir
                 # 2.3.构建repositories
                 if repo:
                     repositories_el = find_el(root, "./default:repositories", "default", namespaces)
@@ -353,7 +355,7 @@ async def run():
         mvn_dependency_list = f"{mvn} dependency:list" # 搜集依赖jar的信息
         mvn_clean = f"{mvn} clean"
 
-        # region: 执行maven
+        # region: 打开控制台
         print("开打虚拟控制台....")
         xwin = "cmd" if is_win() else "/bin/bash"
         console = subprocess.Popen(xwin, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -364,9 +366,9 @@ async def run():
         构造一个用于发送命令和接收返回的嵌套事件协程，目标是在一个虚拟环境中执行pip install，并且搜集Downlaoding和Using cached的结果
         """
         # 定义搜集器
-        __default_collector = lambda res: print(f"get resp: {res}")
+        __default_collector = lambda res: print(f"get resp: {res.strip()}")
         errors = []
-        __err_collector = lambda res: errors.append(res) if res.strip().startswith("[ERROR]") else None
+        __err_collector = lambda res: errors.append(res.strip()) if res.strip().startswith("[ERROR]") else None
         # 定义处理方法
         async def process_command(cmd_list):
             for i in range(len(cmd_list)):
@@ -379,9 +381,10 @@ async def run():
                 console.stdin.flush()
                 while True:
                     resp = console.stdout.readline()
-                    resp = resp.decode("GBK")
-                    if resp.strip().startswith("[ERROR]"):
-                        raise Exception("执行命令出现异常")
+                    try:
+                        resp = resp.decode("UTF-8")
+                    except UnicodeDecodeError :
+                        resp = resp.decode("GBK")
                     [collect(resp) for collect in info_collecotr]
                     if resp.strip() == command_over_signal:
                         # 说明上一个命令已经发送，并且执行成功
@@ -419,6 +422,10 @@ async def run():
             pass
         print("执行mvn命令打包完成.")
         if len(errors)>0:
+            print("+++++++++++++++++++ERROR++++++++++++++++")
+            for err in errors:
+                print(f"+ {err}")
+            print("++++++++++++++++++++++++++++++++++++++++")
             raise Exception("执行mvn打包出现错误，请检查控制台[ERROR]信息")
         # endregion
 
@@ -446,7 +453,7 @@ async def run():
         #                                f"-DgeneratePom=true -Dpackaging=jar "
         #                                f"-Durl={nexus} "
         #                                f"-Dfile={str(pl.joinpath(artifactId+'-'+version+'.jar'))}")
-        temp = []
+        pl = pathlib(work_dir)
         for item in build_targets:
             target_dir = str(pathlib(item, "../").resolve())
             propertyfile = str(pathlib(target_dir, "maven-archiver", "pom.properties").resolve())
@@ -461,28 +468,30 @@ async def run():
                     if line.find("artifactId=")>=0: artifactId = line.replace("artifactId=","").strip()
                     line = prop.readline()
                 if version and groupId and artifactId:
+                    # 把mvn-jar-plugin打包的target，拷贝到dependencies里面（删除原来通过maven-dependency-plugin拷贝的，因为它拷贝的pom是nexus_pom）
+                    os.remove(str(pl.joinpath(artifactId+'-'+version+'.jar')))
+                    os.remove(str(pl.joinpath(artifactId+'-'+version+'.pom')))
+                    shutil.copyfile(item, str(pl.joinpath(artifactId+'-'+version+'.jar')))
+                    shutil.copyfile(str(pathlib(item, '../', 'pom.xml').resolve()), str(pl.joinpath(artifactId+'-'+version+'.pom')))
                     mvn_deploys.append(f"mvn deploy:deploy-file -DgroupId={groupId} "
                                        f"-DartifactId={artifactId} -Dversion={version} "
                                        f"-DgeneratePom=false -Dpackaging=jar "
-                                       f"-Durl={nexus} "
+                                       f"-Durl={str(pl.joinpath(artifactId+'-'+version+'.jar'))} "
                                        f"-Dfile={item} "
-                                       f"-DpomFile={str(pathlib(item, '../', 'pom.xml').resolve())}")
-                    temp.append(artifactId+'-'+version+'.jar')
+                                       f"-DpomFile={str(pl.joinpath(artifactId+'-'+version+'.pom'))}")
 
-        pl = pathlib(work_dir)
         for item in dependencies:
             item = item.split(":")
             # org.springframework:spring-aop:jar:4.2.0.RELEASE:compile
             version, groupId, artifactId = item[3],item[0],item[1]
-            if (artifactId+'-'+version+'.jar') not in temp:
-                command = (f"mvn deploy:deploy-file -DgroupId={groupId} "
-                           f"-DartifactId={artifactId} -Dversion={version} "
-                           f"-DgeneratePom=false -Dpackaging=jar "
-                           f"-Durl={nexus} "
-                           f"-Dfile={str(pl.joinpath('dependencies', artifactId+'-'+version+'.jar'))} "
-                           f"-DpomFile={str(pl.joinpath('dependencies', artifactId+'-'+version+'.pom'))}")
-                if command not in mvn_deploys:
-                    mvn_deploys.append(command)
+            command = (f"mvn deploy:deploy-file -DgroupId={groupId} "
+                       f"-DartifactId={artifactId} -Dversion={version} "
+                       f"-DgeneratePom=false -Dpackaging=jar "
+                       f"-Durl={nexus} "
+                       f"-Dfile={str(pl.joinpath(artifactId+'-'+version+'.jar'))} "
+                       f"-DpomFile={str(pl.joinpath(artifactId+'-'+version+'.pom'))}")
+            if command not in mvn_deploys:
+                mvn_deploys.append(command)
         # endregion
 
         # region 重新进入虚拟环境，在虚拟环境中执行mvn deploy
