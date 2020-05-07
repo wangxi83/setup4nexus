@@ -502,7 +502,7 @@ async def run():
         # region 重新进入虚拟环境，在虚拟环境中执行mvn deploy
         #  目前直接覆盖上传，按道理，应该查询一下，然后再上传
         if gen_file:
-            with open(str(pathlib(work_dir, "upload.sh").resolve()), "a+") as code:
+            with open(str(pathlib(work_dir, "../", "upload.sh").resolve()), "a+") as code:
                 # code.write(f'for pom in {str(pathlib(work_dir, "*.pom"))};'+
                 #            f' do mvn deploy:deploy-file -Durl={nexus}' +
                 #            ' -Dfile="${pom%%.pom}.jar" -DgeneratePom=false -DpomFile="$pom"')
@@ -525,7 +525,7 @@ async def run():
             for key in nexus_poms:
                 try:os.remove(nexus_poms.get(key))
                 except:pass
-            await del_file(work_dir)
+            if not gen_file: await del_file(work_dir)
         print("所有处理完成.")
 
 
