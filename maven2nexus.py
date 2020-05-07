@@ -141,9 +141,11 @@ def process_source_pom(source_pom, repo, work_dir):
                     relativePath_el = find_el(parent_el, "./default:relativePath", "default", namespaces)
                     if relativePath_el is None:
                         relativePath_el = ET.SubElement(parent_el, "relativePath")
-                    # 获取父pom.xml相对于当前pom所在目录的相对目录（在mvn的pom中，realativePath是相对于pom所在的目录，而不是pom.xml本身的）
-                    parent_pom = parent_pom.replace("pom.xml", "nexus_pom.xml")
-                    relativePath_el.text = os.path.relpath(parent_pom, str(pathlib(pom).parent.resolve()))
+                        # 获取父pom.xml相对于当前pom所在目录的相对目录（在mvn的pom中，realativePath是相对于pom所在的目录，而不是pom.xml本身的）
+                        parent_pom = parent_pom.replace("pom.xml", "nexus_pom.xml")
+                        relativePath_el.text = os.path.relpath(parent_pom, str(pathlib(pom).parent.resolve()))
+                    else:
+                        relativePath_el.text = relativePath_el.text.replace("pom.xml", "nexus_pom.xml")
             else:
                 # 在最外层构建插件。其他的都可以继承
                 build_el = find_el(root, "./default:build", "default", namespaces)
@@ -473,8 +475,9 @@ async def run():
                         os.remove(str(pl.joinpath(artifactId+'-'+version+'.jar')))
                     if os.path.exists(str(pl.joinpath(artifactId+'-'+version+'.pom'))):
                         os.remove(str(pl.joinpath(artifactId+'-'+version+'.pom')))
-                    shutil.copyfile(item, str(pl.joinpath(artifactId+'-'+version+'.jar')))
-                    shutil.copyfile(str(pathlib(item, '../', 'pom.xml').resolve()), str(pl.joinpath(artifactId+'-'+version+'.pom')))
+                    if os.path.exists(item) and os.path.exists(str(pathlib(item, '../', 'pom.xml').resolve())):
+                        shutil.copyfile(item, str(pl.joinpath(artifactId+'-'+version+'.jar')))
+                        shutil.copyfile(str(pathlib(item, '../', 'pom.xml').resolve()), str(pl.joinpath(artifactId+'-'+version+'.pom')))
                     mvn_deploys.append(f"mvn deploy:deploy-file -DgroupId={groupId} "
                                        f"-DartifactId={artifactId} -Dversion={version} "
                                        f"-DgeneratePom=false -Dpackaging=jar "
