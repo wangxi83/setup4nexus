@@ -13,11 +13,12 @@ think everybody has a local nexus, every one want's to
 
 # Use
 ## for python
-1. must include a setup.py
-2. copy `setup4nexus.py` to your project's root
-3. run with `python setup4nexus.py -t [nexus repo path](must) -u [nexus username](opt) -p [nexus password](opt)`
+1. your project must have a setup.py
+2. run with `python setup4nexus.py -w [project_dir](must) -t [nexus repo path](must) -u [nexus username](opt) -p [nexus password](opt)`
+3. use "--python-bin={path to python bin}" to offer a target python(>=3.6)
 4. use "-k True(default value)|Fasle" to keep wheels after package and upload (opt)
 5. use "-i [pypi source url]" to set a custom pypi source (opt)
+6. use "-f" to generate a upload.sh file into the target dir instead of upload to nexus 
 
 ## for java
 1. must use maven
