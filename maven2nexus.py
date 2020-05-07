@@ -481,8 +481,8 @@ async def run():
                     mvn_deploys.append(f"mvn deploy:deploy-file -DgroupId={groupId} "
                                        f"-DartifactId={artifactId} -Dversion={version} "
                                        f"-DgeneratePom=false -Dpackaging=jar "
-                                       f"-Durl={str(pl.joinpath(artifactId+'-'+version+'.jar'))} "
-                                       f"-Dfile={item} "
+                                       f"-Durl={nexus} "
+                                       f"-Dfile={str(pl.joinpath(artifactId+'-'+version+'.jar'))} "
                                        f"-DpomFile={str(pl.joinpath(artifactId+'-'+version+'.pom'))}")
 
         for item in dependencies:
