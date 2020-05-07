@@ -324,7 +324,7 @@ async def run():
 
         mvn = str(pathlib(maven_home, "mvn").resolve()) if maven_home else "mvn"
         out, err = await exec_shell(f"{mvn} -version")
-        if err or out.find("Maven home:")<0:
+        if out.find("Maven home:")<0 and err.find("Maven home:")<0:
             raise Exception(f"{mvn} is not a valid mvn")
         maven_home = out[out.find("Maven home:")+len("Maven home:"):out.find("\n", out.find("Maven home:"))].strip()
         maven_home = str(pathlib(maven_home).resolve())
