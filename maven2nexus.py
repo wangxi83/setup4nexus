@@ -469,8 +469,10 @@ async def run():
                     line = prop.readline()
                 if version and groupId and artifactId:
                     # 把mvn-jar-plugin打包的target，拷贝到dependencies里面（删除原来通过maven-dependency-plugin拷贝的，因为它拷贝的pom是nexus_pom）
-                    os.remove(str(pl.joinpath(artifactId+'-'+version+'.jar')))
-                    os.remove(str(pl.joinpath(artifactId+'-'+version+'.pom')))
+                    if os.path.exists(str(pl.joinpath(artifactId+'-'+version+'.jar'))):
+                        os.remove(str(pl.joinpath(artifactId+'-'+version+'.jar')))
+                    if os.path.exists(str(pl.joinpath(artifactId+'-'+version+'.pom'))):
+                        os.remove(str(pl.joinpath(artifactId+'-'+version+'.pom')))
                     shutil.copyfile(item, str(pl.joinpath(artifactId+'-'+version+'.jar')))
                     shutil.copyfile(str(pathlib(item, '../', 'pom.xml').resolve()), str(pl.joinpath(artifactId+'-'+version+'.pom')))
                     mvn_deploys.append(f"mvn deploy:deploy-file -DgroupId={groupId} "
