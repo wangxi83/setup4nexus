@@ -319,7 +319,7 @@ async def run():
         # 检查maven、java
         java = str(pathlib(java_home, "java").resolve()) if java_home else "java"
         out, err = await exec_shell(f"{java} -version")
-        if err and err.find("java version")<0:
+        if err and err.find("version")<0:
             raise Exception(f"{java} is not a valid java")
 
         mvn = str(pathlib(maven_home, "mvn").resolve()) if maven_home else "mvn"
