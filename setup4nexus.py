@@ -147,6 +147,16 @@ async def run():
         print("执行打包完成.")
         # endregion
 
+        # region: 复制requirements.txt
+        print("复制requirements.txt到dist目录....")
+        temp_requirements_txt = str(dist_pl.joinpath("temp_requirements.txt").resolve())
+        with open(temp_requirements_txt, "w+") as output:
+            with open(str(pathlib("./requirements.txt").resolve()), "r") as read:
+                for line in read.readlines():
+                    output.write(line)
+        print("复制requirements.txt到打包目录完成.")
+        # endregion
+
         # region: 安装twine
         hastwine = []
         def __twine_colloctor__(resp):
