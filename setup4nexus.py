@@ -13,14 +13,13 @@
 
 from pathlib import Path as pathlib
 import os, asyncio, sys, getopt, requests
+import traceback
 
 
 def is_win():
     import sys
     return sys.platform == "win32"
 
-
-py = "python"
 
 """
 把打包好的wheel以及依赖上床到nexus
@@ -57,14 +56,17 @@ async def exec_shell(command: []):
             raise
 
 
-async def del_file(path):
+def del_file(path):
     if not os.path.exists(path): return
     ls = os.listdir(path)
     for i in ls:
         c_path = os.path.join(path, i)
         if os.path.isdir(c_path):
-            if len(os.listdir(path)) > 0:
-                await del_file(c_path)
+            if len(os.listdir(c_path)) > 0:
+                try:
+                    del_file(c_path)
+                except Exception as e:
+                    print(f"[WARNING]删除文件{c_path}遇到问题{traceback.format_exc()}")
             try:
                 os.removedirs(c_path)
             except FileNotFoundError:
@@ -77,12 +79,12 @@ async def simple_download(url):
     err = None
     for i in range(3):
         try:
-            r = requests.get(url)
-            with open(str(pathlib("./dist", "libs", pathlib(url).name)), "wb") as code:
+            r = requests.get(url, timeout=(5, 30))
+            with open(str(dist_pl.joinpath("libs", pathlib(url).name)), "wb") as code:
                 code.write(r.content)
                 return
         except Exception as e:
-            print("重试下载："+url)
+            print(f"重试下载({i+1})：{url}。遇到错误{e}")
             err = e
     raise Exception(f"重试3次，无法下载{url}, 最后一次失败原因：{err}")
 
@@ -99,16 +101,169 @@ def mysleep(seconds):
     # 当while不成立，这里就return结束携程了，达到了sleep的效果s
 """
 async def run():
-    print("[[[WARNING!!!!!]]]因为采用了virtualenv，所以不要使用IDE的运行按钮执行，否则将导致不可预料的问题！！！")
-    pip_source = "https://pypi.tuna.tsinghua.edu.cn/simple"
-    nexus = None
-    keepwhl = True  # 是否保留生成的依赖文件
-    nexus_user = None
-    nexus_pwd = None
-    gen_file = False  # 以生成sh文件的方式写入twine命令，而不是直接执行上传
-    work_space = None  # 打包的目标目录
+    del_file(str(dist_pl.resolve()))
+
+    console = None
+    tasks = []
+    try:
+        """
+        构造一个用于发送命令和接收返回的嵌套事件协程，目标是在一个虚拟环境中执行pip install，并且搜集Downlaoding和Using cached的结果
+        """
+        xwin = "cmd" if is_win() else "/bin/bash"
+        console = subprocess.Popen(xwin, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # 定义搜集器
+        __default_collector = lambda res: print(f"get resp: {res.strip()}")
+        # 定义处理方法
+        async def process_command(cmd_list):
+            for i in range(len(cmd_list)):
+                cmd, command_over_signal, info_collecotr = cmd_list[i]["cmd"], cmd_list[i]["confirm"], cmd_list[i].get("info_collectors")
+                console.stdin.write((cmd + ("\r\n" if is_win() else "\n")).encode())
+                console.stdin.flush()
+                # 发送特殊的echo，目的是给一个“结束”信号
+                console.stdin.write((f"echo {command_over_signal}" + ("\r\n" if is_win() else "\n")).encode())
+                console.stdin.flush()
+                while True:
+                    resp = await loop.run_in_executor(None, console.stdout.readline)
+                    try:
+                        resp = resp.decode("UTF-8")
+                    except UnicodeDecodeError :
+                        resp = resp.decode("GBK")
+                    [collect(resp) for collect in info_collecotr]
+                    if resp.strip() == command_over_signal:
+                        # 说明上一个命令已经发送，并且执行成功
+                        break
+
+        # region: 打包
+        print("执行打包....")
+        commands = [
+            # 切换到工作目录
+            {"cmd": f"cd {work_space}", "confirm": "___cd_workspace_over", "info_collectors": [__default_collector]},
+            # 执行setup.py
+            {"cmd": f"{py} setup.py bdist_wheel",  "confirm": "___setup_bdist_over", "info_collectors":  [__default_collector]}
+        ]
+        task = asyncio.ensure_future(process_command(commands))
+        tasks.append(task)
+        await asyncio.wait_for(task, timeout=None)
+        print("执行打包完成.")
+        # endregion
+
+        # region: 安装twine
+        hastwine = []
+        def __twine_colloctor__(resp):
+            if resp.strip().find("twine")>=0:
+                hastwine.append(resp)
+        # 看是否安装了twine
+        task = asyncio.ensure_future(process_command([
+            {"cmd": f"{py} -m pip list", "confirm": "___pip_list_over", "info_collectors": [__default_collector, __twine_colloctor__]},
+        ]))
+        tasks.append(task)
+        await asyncio.wait_for(task, timeout=None)
+        if not hastwine:
+            task = asyncio.ensure_future(process_command([
+                # 执行pip install twine
+                {"cmd": f"{py} -m pip install -i {pip_source} twine", "confirm": "___install_twine_over", "info_collectors":  [__default_collector]},
+            ]))
+            tasks.append(task)
+            await asyncio.wait_for(task, timeout=None)
+        # endregion
+
+
+        # region: 执行python -m pip wheel -r requirements.txt -w ./dist/libs -b ./dist/libs_build
+        task = asyncio.ensure_future(process_command([
+            {"cmd": f"{py} -m pip wheel -r requirements.txt -i {pip_source} -w {libs_dir} -b {libs_build_dir}",
+             "confirm": "___pip_wheel_over", "info_collectors":  [__default_collector]},
+        ]))
+        tasks.append(task)
+        await asyncio.wait_for(task, timeout=None)
+        # endregion
+
+        # 把下载好的依赖和打包目标整理好
+        wheels = [str(dist_pl.joinpath(whl).resolve()) for whl in os.listdir(str(dist_pl.resolve())) if whl.endswith(".whl")]
+        wheels.extend([str(pathlib(libs_dir, whl).resolve()) for whl in os.listdir(libs_dir) if whl.endswith(".whl")])
+
+        # 删除builds_lib
+        del_file(libs_build_dir)
+
+        # region 生成命令，twine upload
+        access = ""
+        if nexus_user and nexus_pwd:
+            access = f"-u {nexus_user} -p {nexus_pwd}"
+        if gen_file:
+            with open(str(dist_pl.joinpath("upload.sh").resolve()), "a+") as code:
+                # 把下载好的依赖加入上传列表
+                for whl in wheels:
+                    cmd = f"{py} -m twine upload --repository-url {nexus} {access} {whl}"
+                    code.write(cmd+"\n")
+        else:
+            #  目前直接覆盖上传，按道理，应该查询一下，然后再上传
+            print("上传到nexus....")
+            for whl in wheels:
+                for i in range(3):
+                    try:
+                        # 把任务启动起来
+                        task = asyncio.ensure_future(process_command([
+                            {"cmd": f"{py} -m twine upload --repository-url {nexus} {access} {whl} --disable-progress-bar",
+                             "confirm": "___twine_upload_over", "info_collectors": [__default_collector]},
+                        ]))
+                        tasks.append(task)
+                        await asyncio.wait_for(task, timeout=upload_timeout)
+                        break
+                    except Exception as e:
+                        if i<2:
+                            print(f"重试上传({i+1})：{whl}。 遇到错误：{e}")
+                            print(traceback.format_exc())
+                            continue
+                        err = e
+                    raise Exception(f"重试3次，无法上传{whl}到{nexus}, 最后一次失败原因：{err}")
+            print("上传到nexus完成.")
+        # endregion
+    except Exception as e:
+        print("出现错误：", e)
+        print(traceback.format_exc())
+    finally:
+        import signal
+        try:
+            for task in tasks:
+                try:
+                    console.send_signal(signal.CTRL_C_EVENT if is_win() else signal.SIGKILL)
+                except Exception as e:
+                    print(f"[WARING]关闭虚拟控制台遇到问题，{e}")
+                # while not task.cancelled() and not task.done():
+                #     print(f"task.cancelled {task.cancelled()}, task.done {task.done()}")
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    print(f"{task} is cancelled now")
+        except Exception as e:
+            print(f"[WARING]停止task遇到问题，{e}")
+
+        try:
+            print("关闭虚拟控制台....")
+            console.kill()
+            os.kill(console.pid, 9 if is_win() else signal.SIGKILL)
+            os.killpg(os.getpgid(console.pid), 9 if is_win() else signal.SIGKILL)
+        except Exception as e:
+            pass
+
+        loop.stop()
+
+pip_source = "https://mirrors.aliyun.com/pypi/simple/"
+nexus = None
+keepwhl = True  # 是否保留生成的依赖文件
+nexus_user = None
+nexus_pwd = None
+gen_file = False  # 以生成sh文件的方式写入twine命令，而不是直接执行上传
+work_space = None  # 打包的目标目录
+upload_timeout = 60 # twine上传的超时时间
+py = "python"
+work_pl = None
+dist_pl = None
+if __name__ == '__main__':
+    opts, args = getopt.getopt(sys.argv[1:],
+                               "i:w:t:k:u:p:f",
+                               ["source=", "project-dir=", "nexus=", "keep-whl=","username=","password=","python-bin=","upload-timeout="])
     #
-    opts, args = getopt.getopt(sys.argv[1:], "i:w:t:k:u:p:f", ["source=", "project-dir=", "nexus=", "keep-whl=","username=","password=","python-bin="])
     for arg, val in opts:
         if arg in ("-i","--source"):
             pip_source = val
@@ -121,210 +276,48 @@ async def run():
         if arg in ("-p", "--password"):
             nexus_pwd = val
         if arg == "-w":
-            work_space = arg
+            work_space = val
         if arg == "-f":
             gen_file = True
         if arg == "--python-bin":
-            if not os.path.exists(arg):
-                raise Exception(f"{arg} 不存在")
-            global py
-            py = arg
+            if not os.path.exists(val):
+                raise Exception(f"{val} 不存在")
+            py = val
+        if arg == "--upload-timeout":
+            upload_timeout = int(val)
 
     if not work_space:
         raise Exception(f"-w [workspace] must specified")
     if not os.path.exists(work_space):
-        raise Exception(f"指定的项目{arg} 不存在")
+        raise Exception(f"指定的项目{work_space} 不存在")
     work_pl = pathlib(work_space)
     dist_pl = work_pl.joinpath("dist") # setup.py的目标目录
     if not os.path.exists(str(work_pl.joinpath("setup.py").resolve())):
         raise Exception(f"项目{arg} 中没有setup.py")
+    libs_dir = str(dist_pl.joinpath('libs').resolve())
+    libs_build_dir = str(dist_pl.joinpath('libs_build').resolve())
 
     if nexus is None:
         raise Exception("-t [nexus url] must specified")
 
-    await del_file(str(pathlib("./dist").resolve()))
-
-    try:
-        # region: 打包
-        print("执行打包....")
-        out, err = await exec_shell(f"{py} {str(work_pl.joinpath('setup.py').resolve())} bdist_wheel")
-        print(out)
-        if err:
-            raise Exception("执行打包出现错误", err)
-        print("执行打包完成.")
-        # endregion
-
-        # region: 复制requirements.txt
-        print("复制requirements.txt到dist目录....")
-        temp_requirements_txt = str(dist_pl.joinpath("temp_requirements.txt").resolve())
-        with open(temp_requirements_txt, "w+") as output:
-            with open(str(pathlib("./requirements.txt").resolve()), "r") as read:
-                for line in read.readlines():
-                    output.write(line)
-        print("复制requirements.txt到打包目录完成.")
-        # endregion
-
-        # region: 构建虚拟环境
-        print("构建虚拟环境并执行pip install....")
-        print("virtualenv..")
-        out, err = await exec_shell([py, "-m", "virtualenv", str(dist_pl.joinpath("temp_env").resolve())])
-        if err:
-            raise Exception("执行构建虚拟环境错误", err)
-        print("virtualenv....ok")
-        xwin = "cmd" if is_win() else "/bin/bash"
-        console = subprocess.Popen(xwin, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        # endregion
-
-        """
-        构造一个用于发送命令和接收返回的嵌套事件协程，目标是在一个虚拟环境中执行pip install，并且搜集Downlaoding和Using cached的结果
-        """
-        # 定义搜集器
-        __default_collector = lambda res: print(f"get resp: {res.strip()}")
-        # 定义处理方法
-        async def process_command(cmd_list):
-            for i in range(len(cmd_list)):
-                cmd, command_over_signal, info_collecotr = cmd_list[i]["cmd"], cmd_list[i]["confirm"], cmd_list[i].get("info_collectors")
-                console.stdin.write((cmd + ("\r\n" if is_win() else "\n")).encode())
-                console.stdin.flush()
-                print(f"{cmd}  已发送")
-                # 发送特殊的echo，目的是给一个“结束”信号
-                console.stdin.write((f"echo {command_over_signal}" + ("\r\n" if is_win() else "\n")).encode())
-                console.stdin.flush()
-                while True:
-                    resp = console.stdout.readline()
-                    try:
-                        resp = resp.decode("UTF-8")
-                    except UnicodeDecodeError :
-                        resp = resp.decode("GBK")
-                    [collect(resp) for collect in info_collecotr]
-                    if resp.strip() == command_over_signal:
-                        # 说明上一个命令已经发送，并且执行成功
-                        break
-
-        # region: 使用process_command在虚拟环境中执行pip
-        """ 
-        构造process_command任务的参数
-        """
-        wheels = [] # 用于缓存结果
-        # 定义搜集器
-        def __pip_collector_(res):
-            res = res.strip()
-            if res.find("Downloading")==0:
-                wheels.append(res.split(" ")[1])
-            if res.find("Using cached")==0:
-                wheels.append(res.split(" ")[2])
-        #  定义一组命令，以及命令返回的采集器
-        commands = [
-            # 打开venv
-            {"cmd": str(dist_pl.joinpath('temp_env', "Scripts", "activate").resolve()) if is_win() \
-                else f"source {str(dist_pl.joinpath('temp_env', 'bin', 'activate').resolve())}", "confirm": "___onpen_venv_cover",
-             "info_collectors": [__default_collector]},
-            # 执行pip install -r
-            {"cmd": f"pip install -i {pip_source} twine", "confirm": "___pip_install_twine_over",
-             "info_collectors":  [__default_collector]},
-            # 执行pip install -r
-            {"cmd": f"pip install -i {pip_source} -r {temp_requirements_txt}", "confirm": "___pip_install_over",
-             "info_collectors":  [__default_collector, __pip_collector_]}
-        ]
-        # 把任务启动起来
-        tasks = [asyncio.ensure_future(process_command(commands))]
-        fetures, pendings = await asyncio.wait(tasks)
-        for task in fetures:
-            #  执行迭代，让任务在主事件循环中处理完
-            pass
-        print("构建虚拟环境并执行pip install完成.")
-        # endregion
-
-        # region 执行一次下载，把所有的wheel下载到libs目录
-        # 经过上一步的pip处理，得到一个wheels的集合列表
-        if wheels:
-            path = str(dist_pl.joinpath("libs").resolve())
-            if not os.path.exists(path): os.mkdir(path)
-            print("通过搜集到的whl列表进行下载....")
-            tasks = []
-            [tasks.append(asyncio.ensure_future(simple_download(whl))) for whl in wheels]
-            fetures, pendings = await asyncio.wait(tasks)
-            for task in fetures: pass #  执行迭代，让任务在主事件循环中处理完
-            print("通过搜集到的whl列表进行下载完成.")
-        # endregion
-
-        # region 生成命令，或者重新进入虚拟环境，在虚拟环境中执行twine upload
-        access = ""
-        if nexus_user and nexus_pwd:
-            access = f"-u {nexus_user} -p {nexus_pwd}"
-        if gen_file:
-            with open(str(dist_pl.joinpath("upload.sh").resolve()), "a+") as code:
-                # 把下载好的依赖加入上传列表
-                for whl in wheels:
-                    target = str(dist_pl.joinpath("libs", pathlib(whl).name).resolve())
-                    cmd = f"{py} -m twine upload --repository-url {nexus} {access} {target}"
-                    code.write(cmd+"\n")
-
-                # 把打包文件加入上传列表
-                cmd = f"{py} -m twine upload --repository-url {nexus} {access} {str(dist_pl.resolve())+os.path.sep+'*.whl'}"
-                code.write(cmd+"\n")
-        else:
-            #  目前直接覆盖上传，按道理，应该查询一下，然后再上传
-            print("上传到nexus....")
-
-            # 把下载好的依赖在虚拟环境中执行twine上传
-            for whl in wheels:
-                target = str(dist_pl.joinpath("libs", pathlib(whl).name).resolve())
-                cmd = [
-                   {"cmd": f"python -m twine upload --repository-url {nexus} {access} {target}", "confirm": "___twine_upload_over", "info_collectors": [__default_collector]},
-                ]
-                for i in range(4):
-                    try:
-                        # 把任务启动起来
-                        tasks = [asyncio.ensure_future(process_command(cmd))]
-                        fetures, pendings = await asyncio.wait(tasks)
-                        #  执行迭代，让任务在主事件循环中处理完
-                        for task in fetures: pass
-                        break
-                    except Exception as e:
-                        if i<3:
-                            print("重试上传："+whl)
-                            continue
-                        err = e
-                    raise Exception(f"重试3次，无法上传{whl}到{nexus}, 最后一次失败原因：{err}")
-
-            # 把打包文件加入上传列表
-            target = str(dist_pl.resolve())+os.path.sep+'*.whl'
-            cmd = [
-                {"cmd": f"python -m twine upload --repository-url {nexus} {access} {target}",
-                 "confirm": "___twine_upload_over", "info_collectors": [__default_collector]},
-            ]
-            for i in range(4):
-                try:
-                    # 把任务启动起来
-                    tasks = [asyncio.ensure_future(process_command(cmd))]
-                    fetures, pendings = await asyncio.wait(tasks)
-                    #  执行迭代，让任务在主事件循环中处理完
-                    for task in fetures: pass
-                    break
-                except Exception as e:
-                    if i<3:
-                        print("重试上传："+target)
-                        continue
-                    err = e
-                raise Exception(f"重试3次，无法上传{target}到{nexus}, 最后一次失败原因：{err}")
-            print("上传到nexus完成.")
-        # endregion
-    except Exception as e:
-        import traceback
-        print("出现错误：", e)
-        print(traceback.format_exc())
-    finally:
-        # 清除env
-        await del_file(dist_pl.joinpath("temp_env").resolve())
-        if not keepwhl:
-            print("清除dist....")
-            await del_file(str(dist_pl.resolve()))
-        print("所有处理完成.")
-
-
-if __name__ == '__main__':
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(run())
-    loop.close()
+    try:
+        loop.run_until_complete(run())
+        loop.close()
+    except Exception as e:
+        print(f"[CATCHING INFO]{e}")
+    finally:
+        loop.stop()
+        if not keepwhl:
+            import time
+            for i in range(3):
+                try:
+                    print("清除dist....")
+                    del_file(str(dist_pl.resolve()))
+                except Exception as e:
+                    print(f"[WARING]重试（{i+1}）删除{str(dist_pl.resolve())}遇到问题，{e}")
+                    time.sleep(3)
+
+        print("所有处理完成.")
+        sys.exit(0)
 
