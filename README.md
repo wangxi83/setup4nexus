@@ -38,9 +38,7 @@ think everybody has a local nexus, every one want's to
    - build with setuptools
    - copy requirements.txt named temp_requirements.txt to the dist dir
    - make a virtualenv in the dist dir
-   - activate the virtaulenv and pip install -r  temp_requirements.txt
-   - gather the Downloading or Using Cache urls
-   - download there urls to dist/libs
+   - activate the virtaulenv and pip wheel -r temp_requirements.txt
    - use twine to upload dist/libs/* and the builded result to nexus
 
 2. For java
