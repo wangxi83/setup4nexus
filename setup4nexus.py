@@ -110,9 +110,36 @@ async def run():
         构造一个用于发送命令和接收返回的嵌套事件协程，目标是在一个虚拟环境中执行pip install，并且搜集Downlaoding和Using cached的结果
         """
         xwin = "cmd" if is_win() else "/bin/bash"
-        console = subprocess.Popen(xwin, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        console = subprocess.Popen(xwin, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) #
+
         # 定义搜集器
-        __default_collector = lambda res: print(f"get resp: {res.strip()}")
+        __default_collector = lambda res: print(f"get  [resp]: {res.strip()}")
+
+        class __error_collector:
+            err = []
+            error_comming = False
+            error_end = True
+            def collect(self, resp):
+                strip = resp.strip()
+                if strip.lower().find("invalid")>=0 or strip.lower().find("error")>=0:
+                    print(f"get [error]: {strip}")
+                    self.err.append(resp)
+                else:
+                    # 收到异常信息
+                    if strip.startswith("Traceback"):
+                        self.error_comming = True
+                    # 如果没有异常信息，直接结束
+                    if not self.error_comming:
+                        return
+                    print(f"get [error]: {strip}")
+                    # 当error_comming开关打开后，采集异常
+                    self.err.append(resp)
+                    # 采集结束，设置comming为false
+                    if not resp.startswith(" "):
+                        self.err.append(resp.strip()) # 最后一行一般是ERROR信息
+                        self.error_comming = False
+
+
         # 定义处理方法
         async def process_command(cmd_list):
             for i in range(len(cmd_list)):
@@ -136,9 +163,8 @@ async def run():
         # region: 打包
         print("执行打包....")
         commands = [
-            # 切换到工作目录
-            {"cmd": f"cd {work_space}", "confirm": "___cd_workspace_over", "info_collectors": [__default_collector]},
             # 执行setup.py
+            {"cmd": f"cd {work_space}",  "confirm": "___cd_workspace_over", "info_collectors":  [__default_collector]},
             {"cmd": f"{py} setup.py bdist_wheel",  "confirm": "___setup_bdist_over", "info_collectors":  [__default_collector]}
         ]
         task = asyncio.ensure_future(process_command(commands))
@@ -151,40 +177,62 @@ async def run():
         print("复制requirements.txt到dist目录....")
         temp_requirements_txt = str(dist_pl.joinpath("temp_requirements.txt").resolve())
         with open(temp_requirements_txt, "w+") as output:
-            with open(str(pathlib("./requirements.txt").resolve()), "r") as read:
+            with open(str(work_pl.joinpath("./requirements.txt").resolve()), "r") as read:
                 for line in read.readlines():
                     output.write(line)
         print("复制requirements.txt到打包目录完成.")
         # endregion
 
-        # region: 安装twine
-        hastwine = []
-        def __twine_colloctor__(resp):
-            if resp.strip().find("twine")>=0:
-                hastwine.append(resp)
-        # 看是否安装了twine
-        task = asyncio.ensure_future(process_command([
-            {"cmd": f"{py} -m pip list", "confirm": "___pip_list_over", "info_collectors": [__default_collector, __twine_colloctor__]},
-        ]))
-        tasks.append(task)
-        await asyncio.wait_for(task, timeout=None)
-        if not hastwine:
-            task = asyncio.ensure_future(process_command([
-                # 执行pip install twine
-                {"cmd": f"{py} -m pip install -i {pip_source} twine", "confirm": "___install_twine_over", "info_collectors":  [__default_collector]},
-            ]))
-            tasks.append(task)
-            await asyncio.wait_for(task, timeout=None)
+        # region: 构建虚拟环境
+        print("virtualenv..")
+        out, err = await exec_shell([py, "-m", "virtualenv", str(dist_pl.joinpath("temp_env").resolve())])
+        if err:
+            raise Exception("执行构建虚拟环境错误", err)
+        print("virtualenv....ok")
         # endregion
 
-
-        # region: 执行python -m pip wheel -r requirements.txt -w ./dist/libs -b ./dist/libs_build
+        # region: 进入虚拟环境，并安装twine
         task = asyncio.ensure_future(process_command([
-            {"cmd": f"{py} -m pip wheel -r requirements.txt -i {pip_source} -w {libs_dir} -b {libs_build_dir}",
-             "confirm": "___pip_wheel_over", "info_collectors":  [__default_collector]},
+            # 打开venv
+            {"cmd": str(dist_pl.joinpath('temp_env', "Scripts", "activate").resolve()) if is_win() \
+                else f"source {str(dist_pl.joinpath('temp_env', 'bin', 'activate').resolve())}", "confirm": "___open_venv_over",
+             "info_collectors": [__default_collector]}
         ]))
         tasks.append(task)
         await asyncio.wait_for(task, timeout=None)
+        error_collector = __error_collector()
+        # 安装twine
+        task = asyncio.ensure_future(process_command([
+            # 执行pip install twine
+            {"cmd": f"python -m pip install -i {pip_source} twine", "confirm": "___install_twine_over", "info_collectors":  [__default_collector]},
+        ]))
+        tasks.append(task)
+        await asyncio.wait_for(task, timeout=None)
+        if len(error_collector.err)>0:
+            raise Exception(f"虚拟环境安装twine出现异常：{error_collector.err}")
+        # 检查twine
+        twineok = []
+        __checktwine_collector = lambda resp: twineok.append(resp) if resp.strip().startswith("twine") else None
+        task = asyncio.ensure_future(process_command([
+            # 执行pip install twine
+            {"cmd": f"python -m pip list", "confirm": "___pip_list_twine_over", "info_collectors":  [__default_collector, __checktwine_collector]},
+        ]))
+        tasks.append(task)
+        await asyncio.wait_for(task, timeout=None)
+        if len(twineok)==0:
+            raise Exception(f"虚拟环境没有正确安装twine，请检查控制台输出")
+        # endregion
+
+        # region: 执行python -m pip wheel -r requirements.txt -w ./dist/libs -b ./dist/libs_build
+        error_collector = __error_collector()
+        task = asyncio.ensure_future(process_command([
+            {"cmd": f"python -m pip wheel -r {temp_requirements_txt} -i {pip_source} -w {libs_dir} -b {libs_build_dir}",
+             "confirm": "___pip_wheel_over", "info_collectors":  [__default_collector, error_collector.collect]},
+        ]))
+        tasks.append(task)
+        await asyncio.wait_for(task, timeout=None)
+        if len(error_collector.err)>0:
+            raise Exception(f"虚拟环境执行pip wheel出现异常：{error_collector.err}")
         # endregion
 
         # 把下载好的依赖和打包目标整理好
@@ -202,29 +250,31 @@ async def run():
             with open(str(dist_pl.joinpath("upload.sh").resolve()), "a+") as code:
                 # 把下载好的依赖加入上传列表
                 for whl in wheels:
-                    cmd = f"{py} -m twine upload --repository-url {nexus} {access} {whl}"
+                    cmd = f"python -m twine upload --repository-url {nexus} {access} {whl}"
                     code.write(cmd+"\n")
         else:
             #  目前直接覆盖上传，按道理，应该查询一下，然后再上传
             print("上传到nexus....")
             for whl in wheels:
-                for i in range(3):
+                for i in range(2):
                     try:
                         # 把任务启动起来
+                        error_collector = __error_collector()
                         task = asyncio.ensure_future(process_command([
-                            {"cmd": f"{py} -m twine upload --repository-url {nexus} {access} {whl} --disable-progress-bar",
-                             "confirm": "___twine_upload_over", "info_collectors": [__default_collector]},
+                            {"cmd": f"python -m twine upload --repository-url {nexus} {access} {whl} --disable-progress-bar",
+                             "confirm": "___twine_upload_over", "info_collectors": [__default_collector, error_collector.collect]},
                         ]))
                         tasks.append(task)
-                        await asyncio.wait_for(task, timeout=upload_timeout)
+                        await asyncio.wait_for(task, timeout=None)
+                        if len(error_collector.err)>0:
+                            raise Exception(f"虚拟环境执行twine upload出现异常：{error_collector.err}")
                         break
                     except Exception as e:
-                        if i<2:
+                        if i<1:
                             print(f"重试上传({i+1})：{whl}。 遇到错误：{e}")
-                            print(traceback.format_exc())
                             continue
                         err = e
-                    raise Exception(f"重试3次，无法上传{whl}到{nexus}, 最后一次失败原因：{err}")
+                    raise Exception(f"重试2次，无法上传{whl}到{nexus}, 最后一次失败原因：{err}")
             print("上传到nexus完成.")
         # endregion
     except Exception as e:
@@ -279,6 +329,8 @@ if __name__ == '__main__':
             pip_source = val
         if arg in ("-t", "--nexus"):
             nexus = val
+            if not nexus.endswith("/"):
+                nexus = nexus+"/"
         if arg in ("-k", "--keep-whl"):
             keepwhl = val=="True"
         if arg in ("-u", "--username"):
