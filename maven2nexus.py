@@ -179,20 +179,20 @@ def process_source_pom(source_pom, repo, work_dir):
                 if plugin_el is None:
                     plugin_el = ET.SubElement(plugins_el, "plugin")
                     ET.SubElement(plugin_el, "artifactId").text = "maven-resources-plugin"
-                configuration_el = find_el(plugin_el, "./default:configuration", "default", namespaces)
-                if configuration_el is None: configuration_el = ET.SubElement(plugin_el, "configuration")
-                outputDirectory_el = find_el(configuration_el, "./default:outputDirectory", "default", namespaces)
-                if outputDirectory_el is None: outputDirectory_el = ET.SubElement(configuration_el, "outputDirectory")
+                executions_el = find_el(plugin_el, "./default:executions", "default", namespaces)
+                if executions_el is None: executions_el = ET.SubElement(plugin_el, "executions")
+                execution_el = ET.SubElement(executions_el, "execution") # 直接创建一个新的execution
+                ET.SubElement(execution_el, "id").text = "copy-pom-nexus"
+                ET.SubElement(execution_el, "phase").text = "package"
+                ET.SubElement(ET.SubElement(execution_el, "goals"), "goal").text = "copy-resources"
+                configuration_el = ET.SubElement(execution_el, "configuration")
+                outputDirectory_el = ET.SubElement(configuration_el, "outputDirectory")
                 outputDirectory_el.text = "${project.build.directory}"
-                resources_el = find_el(configuration_el, "./default:resources", "default", namespaces)
-                if resources_el is None: resources_el = ET.SubElement(configuration_el, "resources")
-                resource_el = find_el(resources_el, "./default:resource", "default", namespaces)
-                if resource_el is None: resource_el = ET.SubElement(resources_el, "resource")
-                directory_el = find_el(resource_el, "./default:directory", "default", namespaces)
-                if directory_el is None: directory_el = ET.SubElement(resource_el, "directory")
+                resources_el = ET.SubElement(configuration_el, "resources")
+                resource_el = ET.SubElement(resources_el, "resource")
+                directory_el = ET.SubElement(resource_el, "directory")
                 directory_el.text = "${project.basedir}"
-                includes_el = find_el(resource_el, "./default:includes", "default", namespaces)
-                if includes_el is None: includes_el = ET.SubElement(resource_el, "includes")
+                includes_el = ET.SubElement(resource_el, "includes")
                 include_el = ET.SubElement(includes_el, "include")
                 include_el.text = "pom.xml"
 
