@@ -527,11 +527,13 @@ async def run():
         # 把依赖的packaging为pom类型的pom也上传
         for key in origin_parent_poms:
             # 拷贝原始pom到目标目录
+            artifactId = origin_parent_poms.get(key).get('artifactId')
+            version = origin_parent_poms.get(key).get('version')
             source = origin_parent_poms.get(key).get('pom')
-            target = str(work_path.joinpath(pathlib(source).name))
+            target = str(work_path.joinpath(artifactId+"-"+version+"."+pathlib(source).name))
             shutil.copyfile(source, target)
             command = (f"mvn deploy:deploy-file -DgroupId={origin_parent_poms.get(key).get('groupId')} "
-                       f"-DartifactId={origin_parent_poms.get(key).get('artifactId')} -Dversion={origin_parent_poms.get(key).get('version')} "
+                       f"-DartifactId={artifactId} -Dversion={version} "
                        f"-DgeneratePom=false -Dpackaging=pom "
                        f"-Durl={nexus} "
                        f"-Dfile={target} "
