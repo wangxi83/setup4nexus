@@ -472,7 +472,7 @@ async def run():
         #                                f"-DgeneratePom=true -Dpackaging=jar "
         #                                f"-Durl={nexus} "
         #                                f"-Dfile={str(pl.joinpath(artifactId+'-'+version+'.jar'))}")
-        pl = pathlib(work_dir)
+        work_path = pathlib(work_dir)
         for item in build_targets:
             target_dir = str(pathlib(item, "../").resolve())
             propertyfile = str(pathlib(target_dir, "maven-archiver", "pom.properties").resolve())
@@ -488,21 +488,21 @@ async def run():
                     line = prop.readline()
                 if version and groupId and artifactId:
                     # 把mvn-jar-plugin打包的target，拷贝到dependencies里面（删除原来通过maven-dependency-plugin拷贝的，因为它拷贝的pom是nexus_pom）
-                    if os.path.exists(str(pl.joinpath(artifactId + '-' + version + '.jar'))):
-                        os.remove(str(pl.joinpath(artifactId + '-' + version + '.jar')))
-                    if os.path.exists(str(pl.joinpath(artifactId + '-' + version + '.pom'))):
-                        os.remove(str(pl.joinpath(artifactId + '-' + version + '.pom')))
+                    if os.path.exists(str(work_path.joinpath(artifactId + '-' + version + '.jar'))):
+                        os.remove(str(work_path.joinpath(artifactId + '-' + version + '.jar')))
+                    if os.path.exists(str(work_path.joinpath(artifactId + '-' + version + '.pom'))):
+                        os.remove(str(work_path.joinpath(artifactId + '-' + version + '.pom')))
                     if os.path.exists(item) and os.path.exists(str(pathlib(item, '../', 'pom.xml').resolve())):
-                        shutil.copyfile(item, str(pl.joinpath(artifactId + '-' + version + '.jar')))
-                        shutil.copyfile(str(pathlib(item, '../', 'pom.xml').resolve()), str(pl.joinpath(artifactId + '-' + version + '.pom')))
+                        shutil.copyfile(item, str(work_path.joinpath(artifactId + '-' + version + '.jar')))
+                        shutil.copyfile(str(pathlib(item, '../', 'pom.xml').resolve()), str(work_path.joinpath(artifactId + '-' + version + '.pom')))
                     # 对于build的内容，看看是否是Skip
                     if nexus_poms.get(artifactId) and nexus_poms.get(artifactId).get("skipdeploy") is False:
                         command = (f"mvn deploy:deploy-file -DgroupId={groupId} "
                                    f"-DartifactId={artifactId} -Dversion={version} "
                                    f"-DgeneratePom=false -Dpackaging=jar "
                                    f"-Durl={nexus} "
-                                   f"-Dfile={str(pl.joinpath(artifactId+'-'+version+'.jar'))} "
-                                   f"-DpomFile={str(pl.joinpath(artifactId+'-'+version+'.pom'))} "
+                                   f"-Dfile={str(work_path.joinpath(artifactId+'-'+version+'.jar'))} "
+                                   f"-DpomFile={str(work_path.joinpath(artifactId+'-'+version+'.pom'))} "
                                    f"-DretryFailedDeploymentCount=3")
                     else:
                         command = f"echo \"根据maven-deploy-plugin配置，skip-deploy: {artifactId+'-'+version+'.jar'}\""
@@ -518,19 +518,23 @@ async def run():
                        f"-DartifactId={artifactId} -Dversion={version} "
                        f"-DgeneratePom=false -Dpackaging=jar "
                        f"-Durl={nexus} "
-                       f"-Dfile={str(pl.joinpath(artifactId+'-'+version+'.jar'))} "
-                       f"-DpomFile={str(pl.joinpath(artifactId+'-'+version+'.pom'))} "
+                       f"-Dfile={str(work_path.joinpath(artifactId+'-'+version+'.jar'))} "
+                       f"-DpomFile={str(work_path.joinpath(artifactId+'-'+version+'.pom'))} "
                        f"-DretryFailedDeploymentCount=3")
             if command not in mvn_deploys:
                 mvn_deploys.append(command)
 
         # 把依赖的packaging为pom类型的pom也上传
         for key in origin_parent_poms:
+            # 拷贝原始pom到目标目录
+            source = origin_parent_poms.get(key).get('pom')
+            target = str(work_path.joinpath(pathlib(source).name))
+            shutil.copyfile(source, target)
             command = (f"mvn deploy:deploy-file -DgroupId={origin_parent_poms.get(key).get('groupId')} "
                        f"-DartifactId={origin_parent_poms.get(key).get('artifactId')} -Dversion={origin_parent_poms.get(key).get('version')} "
                        f"-DgeneratePom=false -Dpackaging=pom "
                        f"-Durl={nexus} "
-                       f"-Dfile={origin_parent_poms.get(key).get('pom')} "
+                       f"-Dfile={target} "
                        f"-DretryFailedDeploymentCount=3")
             if command not in mvn_deploys:
                 mvn_deploys.append(command)
