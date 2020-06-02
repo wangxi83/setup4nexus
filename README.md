@@ -52,8 +52,6 @@ think everybody has a local nexus, every one want's to
 
 # Need Improve
 1. setup4nexus define a "simple_download" to download dependencies and "simple_twine2nexus" to upload them and builed wheel, it should be more robustness
-2. setup4nexus did not tested on a real MAC or linux, so I don't think it will work well, because it will open a terminal(only tested cmd on WIN) with subprocess to work.
-3. maven4nexus, just like the same....
-4. maven4nexus, may be writed as a maven plugin.
-5. no "CLI help info",because i'm a lazy boy
-6. when meet some err(like network err), you will run it again, but now, every stage will work again, it don't check its result--build or mavn package will re-run, it need to be improved and every stages should be more robustness.
+2. maven4nexus, may be writed as a maven plugin.
+3. no "CLI help info",because i'm a lazy boy
+4. when meet some err(like network err), you will run it again, but now, every stage will work again, it don't check its result--build or mavn package will re-run, it need to be improved and every stages should be more robustness.
